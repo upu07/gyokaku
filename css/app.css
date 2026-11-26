@@ -190,3 +190,8 @@ input[type=date],input[type=time]{-webkit-appearance:none;appearance:none;displa
 input[type=date]::-webkit-date-and-time-value,input[type=time]::-webkit-date-and-time-value{text-align:left;margin:0}
 .cond>div,.range .dates>*{min-width:0}
 @media (max-width:420px){.range .dates{grid-template-columns:auto minmax(0,1fr);row-gap:8px}}
+/* 相場ランキングの絞り込み（表示する魚）と並べ替えを、見出しつきの2段に分ける */
+.ctl{display:grid;gap:8px;background:var(--card);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+.ctlr{display:grid;grid-template-columns:5.5em minmax(0,1fr);align-items:center;gap:8px}
+.ctll{font-size:13px;color:var(--sub);font-weight:600}
+.ctl .seg.sm{display:flex;background:var(--bg)}.ctl .seg.sm button{flex:1;padding:0 6px}
