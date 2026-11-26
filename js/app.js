@@ -47,7 +47,7 @@ const search = q => {
 /* ───────── 端末内の設定・下書き ───────── */
 const KEY = 'gyokaku-local-v1';
 const mk = (sp, n, per) => ({ sp, n, per, kg: +(n * per).toFixed(1), price: '' });
-const newDraft = (keep = {}) => ({ id: null, date: keep.date || today(), time: nowHM(), place: { name: '', lat: null, lng: null }, entries: [], tfOn: true, memo: '' });
+const newDraft = (keep = {}) => ({ id: null, date: keep.date || today(), time: nowHM(), place: { name: '', lat: null, lng: null }, entries: [], tfOn: true, memo: '', photos: [] });
 const DEF = {
   mode: 'kg', view: 'calc', fee: 0, tf: 0, per: {},
   sim: { days: 4, m: 1, tfn: 1, cost: 0,
@@ -73,11 +73,12 @@ const Store = {
     catch (e) { console.error(e); this.trips = this.readLocal(); this.ready = true; toast('ログイン機能に接続できません。この端末に保存します'); }
   },
   async save(t) {
-    t.updatedAt = Date.now(); if (!t.id) { t.id = uid(); t.createdAt = t.updatedAt; }
+    t.updatedAt = Date.now(); if (!t.id) t.id = uid(); if (!t.createdAt) t.createdAt = t.updatedAt;
     if (this.user) return FB.saveTrip(t);
     const a = this.readLocal().filter(x => x.id !== t.id); a.push(t); this.writeLocal(a); this.trips = a;
   },
   async remove(id) {
+    const tr = this.trips.find(x => x.id === id); (tr?.photos || []).forEach(p => Photos.del(p));
     if (this.user) return FB.removeTrip(id);
     const a = this.readLocal().filter(x => x.id !== id); this.writeLocal(a); this.trips = a;
   },
@@ -133,12 +134,52 @@ const FB = {
   },
   async removeFriend(fuid) { const { doc, updateDoc, arrayRemove } = this.f; await updateDoc(doc(this.db, 'users', Store.user.uid), { friends: arrayRemove(fuid) }); },
   async profileOf(fuid) { const { doc, getDoc } = this.f; const s = await getDoc(doc(this.db, 'users', fuid)); return s.exists() ? s.data() : null; },
+  async putPhoto(id, data, tripId) { const { doc, setDoc } = this.f; await setDoc(doc(this.db, 'users', Store.user.uid, 'photos', id), { data, tripId, createdAt: Date.now() }); },
+  async delPhoto(id) { const { doc, deleteDoc } = this.f; await deleteDoc(doc(this.db, 'users', Store.user.uid, 'photos', id)); },
+  async getPhoto(id, owner) { const { doc, getDoc } = this.f; const s = await getDoc(doc(this.db, 'users', owner, 'photos', id)); return s.exists() ? s.data().data : null; },
   async loadFriendTrips(fuid) {
     const { collection, getDocs } = this.f;
     const s = await getDocs(collection(this.db, 'users', fuid, 'trips'));
     Store.friendsTrips[fuid] = s.docs.map(d => d.data());
   }
 };
+
+/* ───────── 写真 ─────────
+   端末内（IndexedDB）に必ず保存し、ログイン中は Firestore の users/{uid}/photos にも保存する。
+   Firebase Storage は有料プランが必要なため、縮小したJPEGを文書として保存する（1枚 約100〜300KB）。 */
+const Photos = {
+  db: null, mem: {},
+  open() {
+    if (this.db) return this.db;
+    return this.db = new Promise((res, rej) => { const r = indexedDB.open('gyokaku', 1); r.onupgradeneeded = () => r.result.createObjectStore('photos'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  },
+  async idb(mode, fn) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction('photos', mode), r = fn(tx.objectStore('photos')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => rej(tx.error); }); },
+  async put(id, data) { this.mem[id] = data; try { await this.idb('readwrite', s => s.put(data, id)); } catch (e) {} },
+  async del(id) { delete this.mem[id]; try { await this.idb('readwrite', s => s.delete(id)); } catch (e) {} if (Store.user) FB.delPhoto(id).catch(() => {}); },
+  async get(id, owner) {
+    if (this.mem[id]) return this.mem[id];
+    try { const d = await this.idb('readonly', s => s.get(id)); if (d) return this.mem[id] = d; } catch (e) {}
+    if (Store.user) { const d = await FB.getPhoto(id, owner || Store.user.uid).catch(() => null); if (d) { this.mem[id] = d; if (!owner || owner === Store.user.uid) this.put(id, d); return d; } }
+    return null;
+  },
+  async compress(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const s = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      let q = 0.72, d = c.toDataURL('image/jpeg', q);
+      while (d.length > 700000 && q > 0.35) { q -= 0.12; d = c.toDataURL('image/jpeg', q); }
+      return d;
+    } finally { URL.revokeObjectURL(url); }
+  },
+  // 画面上の <img data-photo="id" data-owner="uid"> に中身を入れる
+  async fill(root = document) {
+    for (const im of root.querySelectorAll('img[data-photo]:not([src])')) { const d = await this.get(im.dataset.photo, im.dataset.owner || null); if (d) im.src = d; else im.alt = '読み込めませんでした'; }
+  }
+};
+const thumbs = (ids, { del = false, owner = '' } = {}) => `<div class="thumbs">${(ids || []).map(id => `<div class="th"><button class="thv" data-view-photo="${esc(id)}" data-owner="${esc(owner)}" aria-label="写真を大きく見る"><img data-photo="${esc(id)}" data-owner="${esc(owner)}" alt="漁の写真"></button>${del ? `<button class="thx" data-del-photo="${esc(id)}" aria-label="この写真を外す">×</button>` : ''}</div>`).join('')}</div>`;
 
 /* ───────── 計算 ───────── */
 const perOf = r => r.per !== '' && r.per != null ? num(r.per) : (L.per[r.sp] ?? byN[r.sp]?.per ?? 1);
@@ -214,11 +255,14 @@ ${d.entries.map((r, i) => rowHtml(r, 'calc', i, true)).join('')}${adder('calc')}
  <div><label class="c" for="tf">振込手数料（円/回）</label><input id="tf" type="number" inputmode="numeric" min="0" step="10" value="${esc(L.tf)}" data-g="tf"></div>
 </div><label class="chk"><input type="checkbox" id="tfOn" ${d.tfOn ? 'checked' : ''}> この漁の売上から振込手数料を引く</label>
 <p class="note" style="margin:4px 0 0">手数料は売上に対する割合です。率と額は出荷先の漁協で確認して入力してください。</p></div>
+<div class="box"><h3>写真</h3>${thumbs(d.photos, { del: true })}
+<label class="filebtn"><input type="file" id="photoIn" accept="image/*" multiple>＋ 写真を追加（撮影・ライブラリ）</label>
+<p class="note" style="margin:6px 0 0">写真は自動で小さくしてから保存します。</p></div>
 <div style="margin-top:14px"><label class="c" for="memo">メモ</label><textarea id="memo" data-d="memo" placeholder="潮・水温・透明度など">${esc(d.memo)}</textarea></div>
 <div class="acts"><button class="pri" id="saveTrip">${editing ? '変更を保存' : 'この漁を記録する'}</button>${editing ? '' : '<button id="clearDraft">入力をクリア</button>'}</div>
 <p class="note" id="saveNote">${Store.user ? 'アカウントに保存します。フレンドに追加した人も見られます。' : (Store.mode === 'cloud' ? 'ログインしていないため、この端末にだけ保存します。' : 'この端末に保存します。')}</p>
 </div></section>`;
-  initPlaceMap();
+  initPlaceMap(); Photos.fill($('main'));
 };
 const initPlaceMap = () => {
   if (pmap) { pmap.remove(); pmap = null; pmark = null; }
@@ -248,11 +292,14 @@ const saveTrip = async () => {
   const d = L.draft;
   const entries = d.entries.filter(r => kgOf(r) > 0);
   if (!entries.length) { toast('重さか匹数を入れた魚を1つ以上追加してください'); return; }
-  const t = { id: d.id || null, date: d.date || today(), time: d.time || '', place: clone(d.place), mode: L.mode, fee: num(L.fee), tf: num(L.tf), tfOn: !!d.tfOn, memo: d.memo || '',
+  const t = { id: d.id || uid(), photos: (d.photos || []).slice(), date: d.date || today(), time: d.time || '', place: clone(d.place), mode: L.mode, fee: num(L.fee), tf: num(L.tf), tfOn: !!d.tfOn, memo: d.memo || '',
     entries: entries.map(r => ({ sp: r.sp, kg: r.kg, n: r.n, per: r.per === '' || r.per == null ? perOf(r) : num(r.per), price: r.price, mp: mprice(r.sp) || r.mp || 0 })) };
   if (d.createdAt) t.createdAt = d.createdAt;
   const b = $('saveTrip'); b.disabled = true;
   try {
+    const prev = Store.trips.find(x => x.id === t.id), before = prev?.photos || [];
+    if (Store.user) for (const id of t.photos.filter(x => !before.includes(x))) { const data = await Photos.get(id); if (data) await FB.putPhoto(id, data, t.id); }
+    before.filter(x => !t.photos.includes(x)).forEach(x => Photos.del(x));
     await Store.save(t);
     toast(d.id ? '変更を保存しました' : '記録しました。「過去の漁獲高」で見られます');
     L.draft = newDraft({ date: t.date }); L.hist.month = t.date.slice(0, 7); L.hist.day = t.date; L.hist.open = t.id; L.hist.who = 'me';
@@ -332,6 +379,7 @@ const renderCal = () => {
   }
   const dayTrips = (byDay[h.day] || []);
   const mine = H().who === 'me';
+  setTimeout(() => Photos.fill($('hbody')));
   $('hbody').innerHTML = `<div class="mnav"><button data-mon="-1" aria-label="前の月">‹ 前月</button><b>${y}年${m}月</b><button data-mon="1" aria-label="次の月">次月 ›</button></div>
 <div class="cal">${WD.map(w => `<div class="dw">${w}</div>`).join('')}${cells}</div>
 <h2 style="margin-top:20px">${md(h.day)}（${WD[new Date(h.day + 'T00:00').getDay()]}）の漁</h2>
@@ -346,6 +394,7 @@ const tripCard = (t, mine) => {
   const g = tripGross(t), c = tripCost(t, g), open = H().open === t.id;
   return `<div class="trip ${isPM(t) ? 'pm' : ''}" id="trip-${esc(t.id)}"><button class="head" data-open="${esc(t.id)}" aria-expanded="${open}"><span class="tm">${esc(t.time || '--:--')}</span><span class="pl">${esc(t.place?.name || (t.place?.lat != null ? '地図で指定' : '場所なし'))}</span><span class="tt">${yen(g - c.fee - c.tf)}円</span></button>
 ${open ? `<div class="det"><div class="tbl"><table><thead><tr><th>魚種</th><th class="r">${t.mode === 'n' ? '匹数' : '重さ'}</th><th class="r">単価</th><th class="r">金額</th></tr></thead><tbody>${t.entries.map(r => { const k = kgOf(r, t.mode), p = priceOf(r, true); return `<tr><td>${esc(r.sp)}</td><td class="r">${t.mode === 'n' ? num(r.n) + '匹（' + k.toFixed(1) + 'kg）' : k.toFixed(1) + 'kg'}</td><td class="r">${yen(p)}円</td><td class="r">${yen(k * p)}円</td></tr>`; }).join('')}</tbody></table></div>
+${t.photos?.length ? thumbs(t.photos, { owner: mine ? '' : H().who }) : ''}
 <p class="note">${subLine(g, c)}${t.memo ? `<br>メモ: ${esc(t.memo)}` : ''}</p>
 <div class="acts">${t.place?.lat != null ? `<button data-showmap="${esc(t.id)}">地図で見る</button>` : ''}${mine ? `<button data-edit="${esc(t.id)}">編集</button><button data-deltrip="${esc(t.id)}">削除</button>` : ''}</div></div>` : ''}</div>`;
 };
@@ -443,6 +492,11 @@ document.addEventListener('input', e => {
 document.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 'tfOn') { L.draft.tfOn = t.checked; calc(); }
+  else if (t.id === 'photoIn') {
+    const files = [...t.files]; if (!files.length) return; toast('写真を取り込んでいます…');
+    for (const f of files) { try { const data = await Photos.compress(f), id = uid(); await Photos.put(id, data); (L.draft.photos = L.draft.photos || []).push(id); } catch (err) { toast('読み込めない写真がありました'); } }
+    saveL(); render(); toast(`写真を${files.length}枚追加しました`);
+  }
   else if (t.id === 'd-time') render();
   else if (t.id === 'who') {
     H().who = t.value; H().open = null; saveL();
@@ -476,13 +530,18 @@ document.addEventListener('click', async e => {
   else if (ds.mon) { const [y, m] = H().month.split('-').map(Number), d = new Date(y, m - 1 + +ds.mon, 1); H().month = ymd(d).slice(0, 7); H().day = ymd(d); H().open = null; render(); }
   else if (ds.day) { H().day = ds.day; H().open = null; render(); }
   else if (ds.open) { H().open = H().open === ds.open ? null : ds.open; render(); document.getElementById('trip-' + ds.open)?.scrollIntoView({ block: 'nearest' }); }
-  else if (ds.edit) { const tr = Store.trips.find(x => x.id === ds.edit); if (tr) { L.draft = Object.assign(newDraft(), clone(tr), { entries: clone(tr.entries).map(r => ({ ...r, price: r.price ?? '' })) }); L.mode = tr.mode || L.mode; L.view = 'calc'; render(); window.scrollTo(0, 0); } }
+  else if (ds.edit) { const tr = Store.trips.find(x => x.id === ds.edit); if (tr) { L.draft = Object.assign(newDraft(), clone(tr), { entries: clone(tr.entries).map(r => ({ ...r, price: r.price ?? '' })), photos: (tr.photos || []).slice() }); L.mode = tr.mode || L.mode; L.view = 'calc'; render(); window.scrollTo(0, 0); } }
   else if (ds.deltrip) {
     if (ds.ok !== '1') { ds.ok = '1'; t.textContent = 'もう一度押すと削除'; setTimeout(() => { ds.ok = ''; t.textContent = '削除'; }, 3000); return; }
     try { await Store.remove(ds.deltrip); H().open = null; toast('削除しました'); render(); } catch (err) { toast('削除できませんでした'); }
   }
   else if (ds.showmap) { H().sub = 'map'; H().focus = ds.showmap; H().period = 'all'; render(); }
   else if (ds.goto) { const tr = curTrips().find(x => x.id === ds.goto); if (tr) { H().sub = 'cal'; H().month = tr.date.slice(0, 7); H().day = tr.date; H().open = tr.id; render(); } }
+  else if (ds.viewPhoto) { const d = await Photos.get(ds.viewPhoto, ds.owner || null); if (!d) return; dlg.innerHTML = `<div class="dl photo"><img src="${d}" alt="漁の写真"><div class="acts"><button class="pri" data-close>閉じる</button></div></div>`; if (!dlg.open) dlg.showModal(); }
+  else if (ds.delPhoto) {
+    const id = ds.delPhoto, saved = Store.trips.some(x => (x.photos || []).includes(id));
+    L.draft.photos = (L.draft.photos || []).filter(x => x !== id); if (!saved) Photos.del(id); saveL(); render();
+  }
   else if (t.id === 'acctBtn') openAcct();
   else if (ds.close != null) dlg.close();
   else if (t.id === 'logout') { await FB.logout(); dlg.close(); toast('ログアウトしました'); }

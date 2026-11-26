@@ -22,6 +22,14 @@ service cloud.firestore {
           request.auth.uid in get(/databases/$(database)/documents/users/$(uid)).data.friends);
         allow write: if signedIn() && request.auth.uid == uid;
       }
+
+      // 漁の写真（縮小したJPEG）。読める人は漁の記録と同じ
+      match /photos/{photoId} {
+        allow read: if signedIn() && (request.auth.uid == uid ||
+          request.auth.uid in get(/databases/$(database)/documents/users/$(uid)).data.friends);
+        allow write: if signedIn() && request.auth.uid == uid && request.resource.data.data.size() < 1000000;
+        allow delete: if signedIn() && request.auth.uid == uid;
+      }
     }
   }
 }
