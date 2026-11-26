@@ -579,12 +579,17 @@ ${!Store.user ? `<p class="empty">${Store.mode === 'cloud' ? 'ログインする
 };
 
 /* ───────── フレンド ───────── */
+const friendBox = () => Store.user ? `<div class="card" id="fbox"><div class="ch"><h2>フレンドを追加</h2></div>
+<p class="note" style="margin-top:0">あなたのID: <b>${esc(FB.idOf(Store.user))}</b>。追加した人は、あなたの記録を見られます。相手もあなたを追加すると、ここに相手の記録が出ます。</p>
+<div class="placeRow"><input id="fid2" placeholder="相手のID" autocapitalize="none" autocomplete="off" spellcheck="false" aria-label="追加するフレンドのID"><button class="sec" id="addFriend2">追加</button></div>
+<p class="err" id="ferr2"></p><div class="flist" id="flist2"></div></div>` : '';
 const renderFriend = () => {
   const f = L.fr;
   if (!Store.user || !Store.sharers.length) {
     head('フレンドの漁獲高', '', '—', '');
     kv([['—', 'フレンド'], ['—', '漁の回数'], ['—', '総重量'], ['—', '手取り']]);
-    $('main').innerHTML = `<section class="band"><div class="wrap"><p class="empty">${!Store.user ? (Store.mode === 'cloud' ? 'ログインすると、フレンドの漁獲高を見られます。' : 'ログイン機能の設定後に使えます。') : 'まだ見られるフレンドがいません。右上のアカウントからフレンドを追加し、相手にもあなたのIDを追加してもらってください。'}</p></div></section>`;
+    $('main').innerHTML = `<section class="band"><div class="wrap"><p class="empty">${!Store.user ? (Store.mode === 'cloud' ? 'ログインすると、フレンドの漁獲高を見られます。' : 'ログイン機能の設定後に使えます。') : 'まだ記録を見られるフレンドがいません。下で相手のIDを追加し、相手にもあなたのIDを追加してもらってください。'}</p>${friendBox()}</div></section>`;
+    fillFriends('flist2');
     return;
   }
   if (!Store.sharers.some(x => x.uid === f.who)) f.who = Store.sharers[0].uid;
@@ -594,8 +599,9 @@ const renderFriend = () => {
 <div class="card"><div class="ch"><h2>今までとった魚種ランキング</h2>${segBtns('frank', RANK, f.rank, '並べ方')}</div>${rankBars(rankSpecies(trips, f.rank), f.rank, 'var(--pm)')}</div>
 <h2 style="margin-top:22px">過去の漁獲高</h2>
 <div class="seg" role="group" aria-label="表示方法"><button data-sub="cal" aria-pressed="${f.sub === 'cal'}">カレンダー</button><button data-sub="map" aria-pressed="${f.sub === 'map'}">地図</button></div>
-<div id="hbody"></div></div></section>`;
+<div id="hbody"></div><div style="margin-top:22px">${friendBox()}</div></div></section>`;
   f.sub === 'map' ? renderMap() : renderCal();
+  fillFriends('flist2');
 };
 
 /* ───────── アカウント ───────── */
@@ -631,10 +637,11 @@ ${FB.isAdmin() ? `<details class="box" id="issue" style="margin-top:12px"${msg =
   }
   if (!dlg.open) dlg.showModal();
 };
-const fillFriends = async () => {
-  const el = $('flist'), ids = Store.profile?.friends || []; if (!el || !ids.length) return;
+const fillFriends = async (elId = 'flist') => {
+  const el = $(elId), ids = Store.profile?.friends || []; if (!el) return;
+  if (!ids.length) { if (elId !== 'flist') el.innerHTML = ''; return; }
   const ps = await Promise.all(ids.map(u => FB.profileOf(u).catch(() => null)));
-  el.innerHTML = ids.map((u, i) => `<div><span>${esc(ps[i]?.name || '不明')} <small class="note">ID: ${esc(ps[i]?.id || '')}</small>${Store.sharers.some(s => s.uid === u) ? ' <span class="pill ok">お互い</span>' : ''}</span><button data-unfriend="${esc(u)}" aria-label="${esc(ps[i]?.name || '')}をフレンドから外す">外す</button></div>`).join('');
+  el.innerHTML = ids.map((u, i) => `<div><span>${esc(ps[i]?.name || '不明')} <small class="note">ID: ${esc(ps[i]?.id || '')}</small>${Store.sharers.some(s => s.uid === u) ? ' <span class="pill ok">お互い</span>' : ' <span class="pill">相手の追加待ち</span>'}</span><button data-unfriend="${esc(u)}" aria-label="${esc(ps[i]?.name || '')}をフレンドから外す">外す</button></div>`).join('');
 };
 dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
 dlg.addEventListener('submit', async e => {
@@ -657,7 +664,10 @@ const render = (soft) => {
   document.querySelectorAll('[data-m]').forEach(b => b.setAttribute('aria-pressed', +b.dataset.m === L.sim.m));
   updAcct(); calc();
 };
-const updAcct = () => { $('acctBtn').textContent = Store.user ? (Store.profile?.name || FB.idOf(Store.user)) : (Store.mode === 'cloud' ? 'ログイン' : 'この端末に保存'); };
+const updAcct = () => {
+  let nm = Store.profile?.name;
+  if (Store.user) { const k = 'gyokaku-name-' + Store.user.uid; try { if (nm) localStorage.setItem(k, nm); else nm = localStorage.getItem(k); } catch (e) {} }
+  $('acctBtn').textContent = Store.user ? (nm || FB.idOf(Store.user)) : (Store.mode === 'cloud' ? 'ログイン' : 'この端末に保存'); };
 
 /* ───────── 操作 ───────── */
 document.addEventListener('input', e => {
@@ -740,9 +750,9 @@ document.addEventListener('click', async e => {
   else if (t.id === 'acctBtn') openAcct();
   else if (ds.close != null) dlg.close();
   else if (t.id === 'logout') { await FB.logout(); dlg.close(); toast('ログアウトしました'); }
-  else if (t.id === 'saveName') { try { await FB.setName($('pname').value.trim() || FB.idOf(Store.user)); toast('表示名を変えました'); } catch (err) { $('ferr').textContent = '変更できませんでした'; } }
+  else if (t.id === 'saveName') { try { const nm = $('pname').value.trim() || FB.idOf(Store.user); await FB.setName(nm); if (Store.profile) Store.profile.name = nm; updAcct(); toast('表示名を変えました'); } catch (err) { $('ferr').textContent = '変更できませんでした'; } }
   else if (t.id === 'addFriend') { try { await FB.addFriend($('fid').value); toast('フレンドに追加しました'); openAcct(); } catch (err) { $('ferr').textContent = err.message; } }
-  else if (ds.unfriend) { try { await FB.removeFriend(ds.unfriend); openAcct(); } catch (err) { $('ferr').textContent = '外せませんでした'; } }
+  else if (ds.unfriend) { try { await FB.removeFriend(ds.unfriend); if (dlg.open) openAcct(); else toast('フレンドから外しました'); } catch (err) { toast('外せませんでした'); } }
   else if (t.id === 'genPw') { const c = 'abcdefghjkmnpqrstuvwxyz23456789'; $('npw2').value = Array.from(crypto.getRandomValues(new Uint32Array(8)), v => c[v % c.length]).join(''); }
   else if (t.id === 'issueBtn') {
     const id = $('nid').value.trim().toLowerCase(), pw = $('npw2').value, nm = $('nname').value.trim();
@@ -757,6 +767,7 @@ document.addEventListener('click', async e => {
     } catch (err) { $('ierr').textContent = err.message; }
     t.disabled = false;
   }
+  else if (t.id === 'addFriend2') { try { await FB.addFriend($('fid2').value); toast('フレンドに追加しました'); $('fid2').value = ''; setTimeout(() => fillFriends('flist2'), 300); } catch (err) { $('ferr2').textContent = err.message; } }
   else if (t.id === 'setPw') { try { await FB.changePassword($('npw').value); toast('パスワードを変えました'); openAcct(); } catch (err) { $('ferr').textContent = err.code === 'auth/requires-recent-login' ? '一度ログアウトしてログインし直してから変えてください' : '変えられませんでした（6文字以上にしてください）'; } }
   else if (t.id === 'migrate') {
     t.disabled = true; const a = Store.readLocal();
@@ -770,4 +781,8 @@ buildSP(); render();
 fetch('data/market.json', { cache: 'no-cache' }).then(r => r.json()).then(d => { MK = d; buildSP(); render(['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)); }).catch(() => toast('相場を読み込めませんでした'));
 Store.init().then(() => render());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// iPhoneでキーボードやダイアログを閉じたあと、下のタブが浮いたままになるのを戻す
+const fixVP = () => setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
+document.addEventListener('focusout', fixVP); dlg.addEventListener('close', fixVP);
+window.visualViewport?.addEventListener('resize', fixVP);
 })();
