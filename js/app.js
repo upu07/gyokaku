@@ -298,6 +298,7 @@ const renderTrend = () => {
   kv([['—', '期間の平均単価'], ['—', '期間の最高'], ['—', '期間の最安'], ['—', '取引があった日数']]);
   loadHist().then(() => { if (L.view === 'mk' && L.mk.sub === 'trend') drawTrend(); });
 };
+const allDays = (from, to) => { const out = []; for (let t = new Date(from + 'T00:00'), e = new Date(to + 'T00:00'); t <= e; t.setDate(t.getDate() + 1)) out.push(`${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`); return out; };
 const drawTrend = () => {
   const m = L.mk, [from, to] = trendRange(), s = byN[m.sp];
   const src = (HIST?.species || []).find(x => x.n === m.sp) || MK.species.find(x => x.n === m.sp);
@@ -309,8 +310,10 @@ const drawTrend = () => {
   const hiR = rows.reduce((a, r) => r.p > a.p ? r : a), loR = rows.reduce((a, r) => r.p < a.p ? r : a);
   kv([[yen(A / K) + '円', '期間の平均単価（金額÷水揚量）'], [yen(hiR.p) + '円', `期間の最高（${md(hiR.d)}）`], [yen(loR.p) + '円', `期間の最安（${md(loR.d)}）`], [rows.length + ' 日', '取引があった日数']]);
   el.innerHTML = `<div class="chart" id="chart" role="img" aria-label="${esc(m.sp)}の日ごとの平均単価の推移、${md(from)}から${md(to)}"></div>
-<p class="note">線は日ごとの平均単価（その日の金額÷水揚量）、薄い帯はその日の高値〜安値です。日曜など取引がない日はとばしています。</p>
-<details${rows.length <= 14 ? ' open' : ''}><summary>表で見る（${rows.length}日分）</summary><div class="tbl"><table><thead><tr><th>日付</th><th class="r">平均単価</th><th class="r">高値</th><th class="r">安値</th><th class="r">水揚量</th></tr></thead><tbody>${rows.slice().reverse().map(r => `<tr><td>${md(r.d)}（${WD[new Date(r.d + 'T00:00').getDay()]}）</td><td class="r"><b>${yen(r.p)}</b>円</td><td class="r">${r.hi != null ? yen(r.hi) + '円' : '—'}</td><td class="r">${r.lo != null ? yen(r.lo) + '円' : '—'}</td><td class="r">${r.kg.toFixed(1)}kg</td></tr>`).join('')}</tbody></table></div></details>`;
+<p class="note">線は日ごとの平均単価（その日の金額÷水揚量）、薄い帯はその日の高値〜安値です。グラフでは取引がない日をとばしています。</p>
+<h3 style="margin-top:16px">日ごとの相場</h3><div class="tbl"><table><thead><tr><th>日付</th><th class="r">平均単価</th><th class="r">高値</th><th class="r">安値</th><th class="r">水揚量</th></tr></thead><tbody>${allDays(from, to).reverse().map(d => { const r = rows.find(x => x.d === d), wd = new Date(d + 'T00:00').getDay(), dl = `<td>${md(d)}（${WD[wd]}）</td>`;
+  return r ? `<tr>${dl}<td class="r"><b>${yen(r.p)}</b>円</td><td class="r">${r.hi != null ? yen(r.hi) + '円' : '—'}</td><td class="r">${r.lo != null ? yen(r.lo) + '円' : '—'}</td><td class="r">${r.kg.toFixed(1)}kg</td></tr>`
+    : `<tr class="nil">${dl}<td class="r">${wd === 0 ? '休市' : '—'}</td><td class="r">—</td><td class="r">—</td><td class="r">—</td></tr>`; }).join('')}</tbody></table></div>`;
   lineChart($('chart'), rows);
 };
 const niceTicks = (lo, hi, n = 4) => {
