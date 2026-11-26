@@ -1,0 +1,35 @@
+rules_version = '2';
+// 漁獲帳のデータを守るルール。Firebase コンソール → Firestore Database → ルール に貼り付けて「公開」する。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function myId() { return request.auth.token.email.split('@')[0]; }
+
+    // ID → ユーザーの対応表（フレンド追加のときに相手を探すため）
+    match /ids/{id} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && id == myId() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // プロフィール（表示名・フレンド一覧）。ログインした人は名前を読める。書けるのは本人だけ
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == uid;
+
+      // 漁の記録。本人と、本人がフレンドに追加した人だけが読める。書けるのは本人だけ
+      match /trips/{tripId} {
+        allow read: if signedIn() && (request.auth.uid == uid ||
+          request.auth.uid in get(/databases/$(database)/documents/users/$(uid)).data.friends);
+        allow write: if signedIn() && request.auth.uid == uid;
+      }
+
+      // 漁の写真（縮小したJPEG）。読める人は漁の記録と同じ
+      match /photos/{photoId} {
+        allow read: if signedIn() && (request.auth.uid == uid ||
+          request.auth.uid in get(/databases/$(database)/documents/users/$(uid)).data.friends);
+        allow write: if signedIn() && request.auth.uid == uid && request.resource.data.data.size() < 1000000;
+        allow delete: if signedIn() && request.auth.uid == uid;
+      }
+    }
+  }
+}
