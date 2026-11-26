@@ -12,3 +12,5 @@ window.FIREBASE_CONFIG = {
 
 // 発行するIDをFirebaseのメール形式に変換するときのドメイン（実在しなくてよい）
 window.ACCOUNT_DOMAIN = "gyokaku.ohno-suisan.app";
+// アカウント発行画面を使える管理者のID
+window.ADMIN_IDS = ["austin"];
