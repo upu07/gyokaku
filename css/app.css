@@ -4,9 +4,9 @@
  --disp:"Zen Kaku Gothic New","Hiragino Sans",sans-serif;--num:Inter,"Zen Kaku Gothic New","Hiragino Sans",system-ui,sans-serif;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#071724;--ink:#e6eef5;--sub:#9fb2c2;--line:#1d3446;--card:#0d2234;--ok:#4cc38a;--warn:#e0a84a;--bar:rgba(7,23,36,.92);color-scheme:dark}}
 *{box-sizing:border-box;min-width:0}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;min-height:100%;background:var(--bg)}
 [hidden]{display:none!important}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--num);overflow-x:clip;padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+body{margin:0;min-height:100vh;min-height:100dvh;background:var(--bg);color:var(--ink);font:16px/1.55 var(--num);overflow-x:clip;padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}
 .wrap{max-width:1100px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .band{padding-block:clamp(18px,4vw,36px)}
 .top{background:var(--sea);color:var(--seaInk);padding-top:calc(env(safe-area-inset-top,0px) + 12px);padding-bottom:22px}
