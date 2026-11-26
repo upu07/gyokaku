@@ -1,7 +1,5 @@
 /* 大野水産 漁獲帳
-   ① 漁獲高計算: 1回の漁を、日時・場所つきで記録して手取りを出す
-   ② 売上予測: 何日・1日2回潜った場合の売上目安
-   ③ 過去の漁獲高: カレンダー／地図で振り返る（フレンドの記録も）
+   タブ: 直近の相場（ランキング・価格推移・売上予測）／漁獲高記録／ホーム／過去の漁獲高／フレンド
    記録は Firebase（ログイン時）か、この端末（未設定・未ログイン時）に保存する。 */
 (() => {
 'use strict';
@@ -33,7 +31,7 @@ const buildSP = () => {
     const last = d[d.length - 1][0], recent = !!latest && T(last) > T(latest) - 7 * DAY, end = recent ? latest : last;
     const w = d.filter(x => T(x[0]) > T(end) - 7 * DAY && T(x[0]) <= T(end));
     const a = w.reduce((t, x) => t + x[1], 0), kg7 = w.reduce((t, x) => t + x[2], 0);
-    return { n: s.n, j: s.j || '', g: s.g, p: Math.round(kg7 ? a / kg7 : 0), kg7, asof: last, recent, per: s.per || 0 };
+    return { n: s.n, j: s.j || '', g: s.g, p: Math.round(kg7 ? a / kg7 : 0), kg7, a7: a, days7: w.length, asof: last, recent, per: s.per || 0, t: !!s.t };
   }).filter(s => s && s.p > 0);
   byN = Object.fromEntries(SP.map(s => [s.n, s]));
 };
@@ -53,6 +51,7 @@ const DEF = {
   sim: { days: 4, m: 1, tfn: 1, cost: 0,
     am: [mk('クルバニ', 1, 1.5), mk('ハヤー', 3, 0.8), mk('ビタロー', 3, 0.6), mk('ユダヤー', 1, 0.8), mk('オーバチャー', 2, 1.5), mk('長尾ミーバイ', 1, 1.0)],
     pm: [mk('オーバチャー', 4, 1.5), mk('ハヤー', 2, 0.8), mk('長尾ミーバイ', 1, 1.0), mk('アーガイ', 1, 1.0)] },
+  mk: { sub: 'rank', filter: 't', sort: 'a', sp: '', from: '', to: '', quick: '1m' },
   draft: newDraft(), hist: { sub: 'cal', month: today().slice(0, 7), day: today(), open: null, who: 'me', period: 'all' },
   fr: { sub: 'cal', month: today().slice(0, 7), day: today(), open: null, who: '', period: 'all', rank: 'kg' },
   home: { rank: 'kg', fperiod: 'month' }
@@ -60,7 +59,8 @@ const DEF = {
 let L; try { L = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!L || !L.sim || !L.draft) L = clone(DEF);
 L.hist = Object.assign(clone(DEF.hist), L.hist || {}, { who: 'me' });
-L.fr = Object.assign(clone(DEF.fr), L.fr || {}); L.home = Object.assign(clone(DEF.home), L.home || {});
+L.fr = Object.assign(clone(DEF.fr), L.fr || {}); L.mk = Object.assign(clone(DEF.mk), L.mk || {});
+if (L.view === 'sim') { L.view = 'mk'; L.mk.sub = 'sim'; } L.home = Object.assign(clone(DEF.home), L.home || {});
 let saveT; const saveL = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(L)); } catch (e) {} }, 250); };
 
 /* ───────── 記録の保存先 ───────── */
@@ -225,7 +225,108 @@ const modeSw = () => `<div class="mode" role="group" aria-label="計算方法"><
 const modeNote = () => L.mode === 'kg' ? '重さは魚種ごとの合計kgです。' : '匹数×1匹の重さでkgを出します。1匹の重さには魚種ごとの目安が入っているので、実際に合わせて書き換えてください。';
 const MKLINK = `<a href="https://www.okinawa-fish.jp/shikyou/gyosyu/?ichiba=119" style="color:inherit" target="_blank" rel="noopener">おきなわ魚市場情報</a>`;
 
-/* ───────── ① 漁獲高計算 ───────── */
+/* ───────── 直近の相場 ─────────
+   ランキング: 直近7日の市場全体の売上（金額）を魚種ごとに並べる
+   価格の推移: data/history.json（全期間）を必要なときだけ読み、日ごとの平均単価をグラフと表にする */
+let HIST = null, histLoading = null;
+const loadHist = () => histLoading || (histLoading = fetch('data/history.json', { cache: 'no-cache' }).then(r => r.json()).then(d => { HIST = d; return d; }).catch(() => { HIST = MK; return MK; }));
+const MKSUB = { rank: 'ランキング', trend: '価格の推移', sim: '売上予測' };
+const MKSORT = { a: '売上金額', p: '単価', kg: '水揚量' };
+const QUICK = { '1w': ['1週間', 7], '1m': ['1か月', 30], '3m': ['3か月', 91], '1y': ['1年', 365] };
+const mkSeg = () => `<div class="wrap" style="padding-top:16px"><div class="seg" role="group" aria-label="直近の相場の表示">${Object.entries(MKSUB).map(([k, v]) => `<button data-mksub="${k}" aria-pressed="${L.mk.sub === k}">${v}</button>`).join('')}</div></div>`;
+const renderMk = () => {
+  const k = L.mk.sub;
+  if (k === 'sim') { renderSim(); $('main').insertAdjacentHTML('afterbegin', mkSeg()); return; }
+  $('main').innerHTML = mkSeg() + `<section class="band" style="padding-top:0"><div class="wrap" id="mkbody"></div></section>`;
+  k === 'trend' ? renderTrend() : renderRank();
+};
+const calcMk = () => { if (L.mk.sub === 'sim') calcSim(); };
+const rankList = () => {
+  const m = L.mk, list = SP.filter(s => s.recent && (m.filter === 'all' || s.t));
+  const key = m.sort === 'a' ? 'a7' : m.sort === 'kg' ? 'kg7' : 'p';
+  return list.sort((x, y) => y[key] - x[key]);
+};
+const renderRank = () => {
+  const m = L.mk, list = rankList(), key = m.sort === 'a' ? 'a7' : m.sort === 'kg' ? 'kg7' : 'p', mx = list.length ? list[0][key] || 1 : 1;
+  const from = latest ? ymd(new Date(T(latest) - 6 * DAY)) : '';
+  const a = list.reduce((t, x) => t + x.a7, 0), kg = list.reduce((t, x) => t + x.kg7, 0);
+  head('直近1週間の相場', `${m.filter === 't' ? '捕獲対象の魚' : '全魚種'}の売上合計（${from ? md(from) : ''}〜${latest ? md(latest) : ''}・JF沖縄魚市場）`, yen(a) + '<small>円</small>', `相場データの最終取引日 ${latest ? md(latest) : '—'}。毎日昼と夕方に更新`);
+  kv([[list.length + ' 種', '取引があった魚種'], [yen(kg) + ' kg', '水揚量の合計'], [yen(kg ? a / kg : 0) + '円', '平均単価（円/kg）'], [list[0] ? esc(list[0].n) : '—', `${MKSORT[m.sort]}が1位の魚`]]);
+  $('mkbody').innerHTML = `<div class="ch" style="margin-bottom:10px">${segBtns('mkfilter', { t: '捕獲対象', all: '総合' }, m.filter, '魚の範囲')}${segBtns('mksort', MKSORT, m.sort, '並べ方')}</div>
+<p class="note" style="margin-top:0">${m.filter === 't' ? '捕獲対象＝素潜り手銛で狙えて、漁業権の対象（タコ・エビ・カニ・貝）ではない魚。深場の魚・回遊魚・網漁の魚は除いています。' : '市場に出たすべての魚種です。'}魚を押すと価格の推移を見られます。</p>
+${list.length ? `<ol class="rank mkr">${list.map((x, i) => `<li><button class="rk" data-mksp="${esc(x.n)}" aria-label="${esc(x.n)}の価格の推移を見る"><span class="no">${i + 1}</span><span class="nm2">${esc(x.n)}${x.j ? ` <small>${esc(x.j)}</small>` : ''}</span><span class="n">${m.sort === 'a' ? yen(x.a7) + '円' : m.sort === 'kg' ? x.kg7.toFixed(1) + ' kg' : yen(x.p) + '円/kg'}</span><div class="t"><i style="width:${x[key] / mx * 100}%;background:var(--am)"></i></div><small class="sub2">${m.sort === 'p' ? '' : `単価 ${yen(x.p)}円/kg・`}${m.sort === 'kg' ? '' : `${x.kg7.toFixed(1)}kg・`}${x.days7}日取引</small></button></li>`).join('')}</ol>` : '<p class="empty">直近1週間に取引がありません。</p>'}`;
+};
+const mkHits = q => { const h = $('h-mk'); if (!h) return; h.innerHTML = search(q).map(s => `<button data-mksp="${esc(s.n)}"><span>${esc(s.n)} <small>${esc(s.j)}</small></span><span class="pr">${yen(s.p)}円/kg</span></button>`).join(''); };
+const trendRange = () => {
+  const m = L.mk, end = m.to || latest || today();
+  if (m.quick && QUICK[m.quick]) return [ymd(new Date(T(end) - (QUICK[m.quick][1] - 1) * DAY)), end];
+  return [m.from || ymd(new Date(T(end) - 29 * DAY)), end];
+};
+const renderTrend = () => {
+  const m = L.mk; if (!m.sp && SP.length) m.sp = (rankList()[0] || SP[0]).n;
+  const s = byN[m.sp] || null, [from, to] = trendRange();
+  $('mkbody').innerHTML = `<div class="adder" style="margin-top:0"><input type="search" placeholder="島名・和名で魚を検索" aria-label="価格の推移を見る魚を検索" data-mksearch autocomplete="off"><div class="hits" id="h-mk"></div></div>
+<div class="range"><div class="dates"><label class="c" for="mkfrom">開始</label><input type="date" id="mkfrom" value="${from}"><label class="c" for="mkto">終了</label><input type="date" id="mkto" value="${to}"></div>
+<div class="seg sm quick" role="group" aria-label="期間をすぐ選ぶ">${Object.entries(QUICK).map(([k, v]) => `<button data-quick="${k}" aria-pressed="${m.quick === k}">${v[0]}</button>`).join('')}</div></div>
+<div id="trend"><p class="empty">読み込み中…</p></div>`;
+  head(s ? `${s.n}${s.j ? '（' + s.j + '）' : ''}` : '価格の推移', '直近1週間の予想単価', s ? yen(s.p) + '<small>円/kg</small>' : '—', s ? (s.recent ? `${md(latest)}時点` : `${md(s.asof)}までの取引から`) : '');
+  kv([['—', '期間の平均単価'], ['—', '期間の最高'], ['—', '期間の最安'], ['—', '取引があった日数']]);
+  loadHist().then(() => { if (L.view === 'mk' && L.mk.sub === 'trend') drawTrend(); });
+};
+const drawTrend = () => {
+  const m = L.mk, [from, to] = trendRange(), s = byN[m.sp];
+  const src = (HIST?.species || []).find(x => x.n === m.sp) || MK.species.find(x => x.n === m.sp);
+  const rows = (src?.d || []).filter(x => x[0] >= from && x[0] <= to && x[2] > 0).sort((a, b) => a[0] < b[0] ? -1 : 1)
+    .map(x => ({ d: x[0], p: x[1] / x[2], a: x[1], kg: x[2], hi: x[3] ?? null, lo: x[4] ?? null }));
+  const el = $('trend'); if (!el) return;
+  if (!rows.length) { el.innerHTML = `<p class="empty">${esc(m.sp)}はこの期間に取引がありません。期間を広げてください。</p>`; return; }
+  const A = rows.reduce((t, r) => t + r.a, 0), K = rows.reduce((t, r) => t + r.kg, 0), ps = rows.map(r => r.p);
+  const hiR = rows.reduce((a, r) => r.p > a.p ? r : a), loR = rows.reduce((a, r) => r.p < a.p ? r : a);
+  kv([[yen(A / K) + '円', '期間の平均単価（金額÷水揚量）'], [yen(hiR.p) + '円', `期間の最高（${md(hiR.d)}）`], [yen(loR.p) + '円', `期間の最安（${md(loR.d)}）`], [rows.length + ' 日', '取引があった日数']]);
+  el.innerHTML = `<div class="chart" id="chart" role="img" aria-label="${esc(m.sp)}の日ごとの平均単価の推移、${md(from)}から${md(to)}"></div>
+<p class="note">線は日ごとの平均単価（その日の金額÷水揚量）、薄い帯はその日の高値〜安値です。日曜など取引がない日はとばしています。</p>
+<details${rows.length <= 14 ? ' open' : ''}><summary>表で見る（${rows.length}日分）</summary><div class="tbl"><table><thead><tr><th>日付</th><th class="r">平均単価</th><th class="r">高値</th><th class="r">安値</th><th class="r">水揚量</th></tr></thead><tbody>${rows.slice().reverse().map(r => `<tr><td>${md(r.d)}（${WD[new Date(r.d + 'T00:00').getDay()]}）</td><td class="r"><b>${yen(r.p)}</b>円</td><td class="r">${r.hi != null ? yen(r.hi) + '円' : '—'}</td><td class="r">${r.lo != null ? yen(r.lo) + '円' : '—'}</td><td class="r">${r.kg.toFixed(1)}kg</td></tr>`).join('')}</tbody></table></div></details>`;
+  lineChart($('chart'), rows);
+};
+const niceTicks = (lo, hi, n = 4) => {
+  const span = hi - lo || hi || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0))), f = step0 / mag;
+  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag, a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, t = [];
+  for (let v = a; v <= b + step / 2; v += step) t.push(v); return t;
+};
+const lineChart = (box, rows) => {
+  const W = Math.max(300, box.clientWidth || 340), H = 230, P = { l: 52, r: 14, t: 14, b: 28 };
+  const vals = rows.flatMap(r => [r.p, r.hi, r.lo].filter(v => v != null && v > 0));
+  const ticks = niceTicks(Math.min(...vals), Math.max(...vals)), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const t0 = T(rows[0].d), t1 = T(rows[rows.length - 1].d) || t0 + 1;
+  const X = d => P.l + (rows.length === 1 ? (W - P.l - P.r) / 2 : (T(d) - t0) / (t1 - t0) * (W - P.l - P.r));
+  const Y = v => P.t + (1 - (v - y0) / ((y1 - y0) || 1)) * (H - P.t - P.b);
+  const band = rows.filter(r => r.hi != null && r.lo != null);
+  const bandPath = band.length > 1 ? 'M' + band.map(r => `${X(r.d)},${Y(r.hi)}`).join('L') + 'L' + band.slice().reverse().map(r => `${X(r.d)},${Y(r.lo)}`).join('L') + 'Z' : '';
+  const line = 'M' + rows.map(r => `${X(r.d)},${Y(r.p)}`).join('L');
+  const xl = [rows[0], rows[Math.floor(rows.length / 2)], rows[rows.length - 1]].filter((r, i, a) => a.indexOf(r) === i);
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" aria-hidden="true">
+${ticks.map(v => `<line x1="${P.l}" x2="${W - P.r}" y1="${Y(v)}" y2="${Y(v)}" class="grid"/><text x="${P.l - 6}" y="${Y(v) + 4}" class="ax" text-anchor="end">${yen(v)}</text>`).join('')}
+${bandPath ? `<path d="${bandPath}" class="band"/>` : ''}
+<path d="${line}" class="ln"/>
+${rows.length <= 40 ? rows.map(r => `<circle cx="${X(r.d)}" cy="${Y(r.p)}" r="3" class="pt"/>`).join('') : ''}
+<circle cx="${X(rows[rows.length - 1].d)}" cy="${Y(rows[rows.length - 1].p)}" r="5" class="end"/>
+${xl.map((r, i) => `<text x="${X(r.d)}" y="${H - 8}" class="ax" text-anchor="${i === 0 ? 'start' : i === xl.length - 1 ? 'end' : 'middle'}">${md(r.d)}</text>`).join('')}
+<line class="xh" y1="${P.t}" y2="${H - P.b}" x1="-10" x2="-10"/><circle class="xp" r="5" cx="-10" cy="-10"/>
+<rect x="${P.l}" y="0" width="${W - P.l - P.r}" height="${H}" fill="transparent" class="hit"/>
+</svg><div class="tip" hidden></div>`;
+  const svg = box.querySelector('svg'), tip = box.querySelector('.tip'), xh = box.querySelector('.xh'), xp = box.querySelector('.xp');
+  const show = e => {
+    const r0 = svg.getBoundingClientRect(), x = (e.clientX - r0.left) * W / r0.width;
+    const r = rows.reduce((a, b) => Math.abs(X(b.d) - x) < Math.abs(X(a.d) - x) ? b : a);
+    xh.setAttribute('x1', X(r.d)); xh.setAttribute('x2', X(r.d)); xp.setAttribute('cx', X(r.d)); xp.setAttribute('cy', Y(r.p));
+    box.classList.add('on'); tip.hidden = false; tip.innerHTML = `<b>${md(r.d)}（${WD[new Date(r.d + 'T00:00').getDay()]}）</b><br>平均 ${yen(r.p)}円/kg${r.hi != null ? `<br>高値 ${yen(r.hi)}円・安値 ${yen(r.lo)}円` : ''}<br>水揚量 ${r.kg.toFixed(1)}kg`;
+    const px = X(r.d) / W * r0.width; tip.style.left = Math.min(Math.max(px - 70, 0), r0.width - 150) + 'px';
+  };
+  const hide = () => { box.classList.remove('on'); tip.hidden = true; xh.setAttribute('x1', -10); xh.setAttribute('x2', -10); xp.setAttribute('cx', -10); };
+  svg.addEventListener('pointermove', show); svg.addEventListener('pointerdown', show); svg.addEventListener('pointerleave', hide);
+};
+
+/* ───────── 漁獲高記録 ───────── */
 let pmap = null, pmark = null;
 const places = () => {
   const m = new Map(); Store.trips.forEach(t => { if (t.place?.name && t.place.lat != null) m.set(t.place.name, t.place); }); return [...m.values()];
@@ -312,7 +413,6 @@ const saveTrip = async () => {
 };
 
 /* ───────── ② 売上予測 ───────── */
-let mq = '';
 const renderSim = () => {
   const s = L.sim;
   $('main').innerHTML = `
@@ -333,16 +433,7 @@ const renderSim = () => {
 <section class="band" style="padding-top:0"><div class="wrap"><h2>魚種別の売上（期間合計・手数料前）</h2><div class="bars" id="bars"></div>
 <ul class="note"><li>単価は${MKLINK}のJF沖縄魚市場の値で、魚種ごとに直近7日間の「金額の合計÷水揚量の合計」です（円/kg）。7日以内に取引がない魚種は、最後に取引があった週の値を使います。</li><li>市場データにサイズ別の内訳はないため、大型ほど単価が上がる魚では実際とずれます。日曜は市場の取引がありません。</li></ul>
 </div></section>
-<section class="band" style="padding-top:0"><div class="wrap"><details id="mkd"${mq ? ' open' : ''}><summary>相場一覧（${SP.length}魚種・${latest ? md(latest) + '時点' : '読み込み中'}）</summary>
-<div class="adder" style="margin-top:4px;max-width:520px"><input type="search" id="mq" placeholder="島名・和名で絞り込み" aria-label="相場を絞り込み" value="${esc(mq)}" autocomplete="off"></div>
-<div class="tbl" style="margin-top:10px"><table><thead><tr><th>魚種（島名／和名）</th><th class="r">予想単価</th><th class="r">7日間の水揚量</th><th>時点</th></tr></thead><tbody id="mkb"></tbody></table></div>
-<p class="note">一度でも市場に出た魚種は一覧に残します。和名は島名から当てはめた目安で、わからない魚種は空欄です。相場は毎日昼と夕方に自動で更新します。</p></details></div></section>`;
-  fillMk();
-};
-const fillMk = () => {
-  const b = $('mkb'); if (!b) return; const k = kana(mq);
-  const list = SP.filter(s => !k || kana(s.n).includes(k) || kana(s.j).includes(k)).sort((a, b) => b.recent - a.recent || b.p - a.p);
-  b.innerHTML = list.map(s => `<tr><td><b>${esc(s.n)}</b>${s.j ? `<br><small style="color:var(--sub)">${esc(s.j)}</small>` : ''}</td><td class="r"><b>${yen(s.p)}</b> 円/kg</td><td class="r">${s.kg7 ? s.kg7.toFixed(1) + ' kg' : '—'}</td><td>${s.recent ? '<span class="pill ok">今週</span>' : `<span class="pill old">${md(s.asof)}まで</span>`}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">該当する魚種がありません</td></tr>';
+`;
 };
 const calcSim = () => {
   const s = L.sim, d = Math.max(0, num(s.days)), m = s.m, by = {}, tot = { am: 0, pm: 0 }; let kg = 0, n = 0;
@@ -387,7 +478,7 @@ const renderCal = () => {
   $('hbody').innerHTML = `<div class="mnav"><button data-mon="-1" aria-label="前の月">‹ 前月</button><b>${y}年${m}月</b><button data-mon="1" aria-label="次の月">次月 ›</button></div>
 <div class="cal">${WD.map(w => `<div class="dw">${w}</div>`).join('')}${cells}</div>
 <h2 style="margin-top:20px">${md(h.day)}（${WD[new Date(h.day + 'T00:00').getDay()]}）の漁</h2>
-<div class="trips">${dayTrips.length ? dayTrips.map(t => tripCard(t, mine)).join('') : `<p class="empty">この日の記録はありません。${mine ? '「漁獲高計算」から記録できます。' : ''}</p>`}</div>`;
+<div class="trips">${dayTrips.length ? dayTrips.map(t => tripCard(t, mine)).join('') : `<p class="empty">この日の記録はありません。${mine ? '「漁獲高記録」から記録できます。' : ''}</p>`}</div>`;
   // 月の集計をヘッダーに
   const mt = trips.filter(t => t.date.startsWith(h.month)), g = mt.reduce((s, t) => s + tripGross(t), 0), net = mt.reduce((s, t) => s + tripNet(t), 0);
   const kg = mt.reduce((s, t) => s + tripKg(t), 0), nd = new Set(mt.map(t => t.date)).size;
@@ -458,7 +549,7 @@ const renderHome = () => {
 <div class="card"><div class="ch"><h2>フレンドランキング</h2>${segBtns('fperiod', { month: '月間', year: '年間' }, hm.fperiod, '期間')}</div>
 ${!Store.user ? `<p class="empty">${Store.mode === 'cloud' ? 'ログインすると、フレンドとの手取りランキングが出ます。' : 'ログイン機能の設定後に使えます。'}</p>` :
  `<p class="note" style="margin-top:0">${hm.fperiod === 'month' ? `${+mon.slice(5)}月` : `${yr}年`}の手取り。あなたをフレンドに追加している人が並びます。</p><ol class="rank">${fr.map((p, i) => `<li class="${p.uid === 'me' ? 'me' : ''}"><span class="no">${i + 1}</span><span class="nm2">${esc(p.name)}${p.uid === 'me' ? ' <small>あなた</small>' : ''}</span><span class="n">${yen(p.net)}円</span><div class="t"><i style="width:${Math.max(0, p.net) / fmx * 100}%;background:${p.uid === 'me' ? 'var(--am)' : 'var(--pm)'}"></i></div><small class="sub2">${p.n}回・${p.kg.toFixed(1)}kg</small></li>`).join('')}</ol>${Store.sharers.length ? '' : '<p class="note">右上のアカウントからフレンドを追加し、相手にもあなたを追加してもらうと並びます。</p>'}`}</div>
-<div class="card"><h2>最近の漁</h2>${recent.length ? `<div class="trips" style="margin-top:0">${recent.map(t => `<button class="recent" data-goto-own="${esc(t.id)}"><span class="tm">${md(t.date)} ${esc(t.time)}</span><span class="pl">${esc(t.place?.name || '')}</span><span class="tt">${yen(tripNet(t))}円</span></button>`).join('')}</div>` : '<p class="empty">「漁獲高計算」から最初の漁を記録しましょう。</p>'}</div>
+<div class="card"><h2>最近の漁</h2>${recent.length ? `<div class="trips" style="margin-top:0">${recent.map(t => `<button class="recent" data-goto-own="${esc(t.id)}"><span class="tm">${md(t.date)} ${esc(t.time)}</span><span class="pl">${esc(t.place?.name || '')}</span><span class="tt">${yen(tripNet(t))}円</span></button>`).join('')}</div>` : '<p class="empty">「漁獲高記録」から最初の漁を記録しましょう。</p>'}</div>
 </div></section>`;
 };
 
@@ -521,16 +612,16 @@ dlg.addEventListener('submit', async e => {
 });
 
 /* ───────── 描画 ───────── */
-const VIEWS = { calc: [renderCalc, calcCalc], sim: [renderSim, calcSim], home: [renderHome, () => {}], hist: [renderHist, () => {}], friend: [renderFriend, () => {}] };
+const VIEWS = { calc: [renderCalc, calcCalc], mk: [renderMk, calcMk], home: [renderHome, () => {}], hist: [renderHist, () => {}], friend: [renderFriend, () => {}] };
 const calc = () => { VIEWS[L.view][1](); saveL(); };
 const render = (soft) => {
-  if (soft && (L.view === 'calc' || L.view === 'sim')) { VIEWS[L.view][1](); updAcct(); return; } // 入力中の再描画を避ける
-  if (!VIEWS[L.view]) L.view = 'calc';
+  if (soft && (L.view === 'calc' || (L.view === 'mk' && L.mk.sub === 'sim'))) { VIEWS[L.view][1](); updAcct(); return; } // 入力中の再描画を避ける
+  if (!VIEWS[L.view]) L.view = 'home';
   if (L.view !== 'calc' && pmap) { pmap.remove(); pmap = null; pmark = null; }
   if (L.view !== 'hist' && hmap) { hmap.remove(); hmap = null; }
   VIEWS[L.view][0]();
   document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === L.view));
-  $('scn').hidden = L.view !== 'sim';
+  $('scn').hidden = !(L.view === 'mk' && L.mk.sub === 'sim');
   document.querySelectorAll('[data-m]').forEach(b => b.setAttribute('aria-pressed', +b.dataset.m === L.sim.m));
   updAcct(); calc();
 };
@@ -540,7 +631,7 @@ const updAcct = () => { $('acctBtn').textContent = Store.user ? (Store.profile?.
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset.search != null) { renderHits(t.dataset.search, t.value); return; }
-  if (t.id === 'mq') { mq = t.value; fillMk(); return; }
+  if (t.dataset.mksearch != null) { mkHits(t.value); return; }
   if (t.dataset.g) { L[t.dataset.g] = t.value; calc(); return; }
   if (t.dataset.s) { L.sim[t.dataset.s] = t.value; calc(); return; }
   if (t.dataset.d) {
@@ -560,6 +651,7 @@ document.addEventListener('change', async e => {
     saveL(); render(); toast(`写真を${files.length}枚追加しました`);
   }
   else if (t.id === 'd-time') render();
+  else if (t.id === 'mkfrom' || t.id === 'mkto') { const r = trendRange(); L.mk.from = t.id === 'mkfrom' ? t.value : r[0]; L.mk.to = t.id === 'mkto' ? t.value : r[1]; if (L.mk.from > L.mk.to) [L.mk.from, L.mk.to] = [L.mk.to, L.mk.from]; L.mk.quick = ''; saveL(); drawTrend(); const a = $('mkfrom'), b = $('mkto'); if (a) a.value = L.mk.from; if (b) b.value = L.mk.to; document.querySelectorAll('[data-quick]').forEach(x => x.setAttribute('aria-pressed', 'false')); }
   else if (t.id === 'who') {
     L.fr.who = t.value; L.fr.open = null; saveL();
     if (t.value !== 'me' && !Store.friendsTrips[t.value]) { try { await FB.loadFriendTrips(t.value); } catch (err) { toast('記録を読み込めませんでした'); } }
@@ -604,6 +696,11 @@ document.addEventListener('click', async e => {
     const id = ds.delPhoto, saved = Store.trips.some(x => (x.photos || []).includes(id));
     L.draft.photos = (L.draft.photos || []).filter(x => x !== id); if (!saved) Photos.del(id); saveL(); render();
   }
+  else if (ds.mksub) { L.mk.sub = ds.mksub; render(); }
+  else if (ds.mkfilter) { L.mk.filter = ds.mkfilter; render(); }
+  else if (ds.mksort) { L.mk.sort = ds.mksort; render(); }
+  else if (ds.mksp) { L.mk.sp = ds.mksp; L.mk.sub = 'trend'; render(); window.scrollTo(0, 0); }
+  else if (ds.quick) { L.mk.quick = ds.quick; L.mk.to = ''; L.mk.from = ''; render(); }
   else if (ds.hrank) { L.home.rank = ds.hrank; render(); }
   else if (ds.fperiod) { L.home.fperiod = ds.fperiod; render(); }
   else if (ds.frank) { L.fr.rank = ds.frank; render(); }

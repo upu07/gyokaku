@@ -161,3 +161,25 @@ dialog::backdrop{background:rgba(4,14,22,.55)}
 .rank li.me .nm2{color:var(--am)}
 .recent{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;background:var(--bg);text-align:left}
 .recent .tm{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}.recent .pl{color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.recent .tt{font-weight:600;white-space:nowrap}
+/* 直近の相場 */
+.rank.mkr{gap:4px}
+.rank .rk{all:unset;cursor:pointer;display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:2px 8px;align-items:center;width:100%;padding:8px 4px;border-radius:8px;box-sizing:border-box}
+.rank .rk:hover{background:var(--card)}
+.rank .rk:focus-visible{outline:3px solid var(--pm)}
+.rank.mkr li{display:block}
+.range{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:14px 0}
+.range .dates{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr);gap:6px;align-items:center;flex:1 1 300px}
+.range .dates label.c{margin:0}
+.quick{flex:0 0 auto}
+.chart{position:relative;margin-top:6px}
+.chart svg{display:block;overflow:visible;touch-action:pan-y}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .ax{fill:var(--sub);font:11px var(--num);font-variant-numeric:tabular-nums}
+.chart .band{fill:var(--am);opacity:.14}
+.chart .ln{fill:none;stroke:var(--am);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .pt{fill:var(--am);stroke:var(--bg);stroke-width:2}
+.chart .end{fill:var(--am);stroke:var(--bg);stroke-width:2}
+.chart .xh,.chart .xp{visibility:hidden}.chart.on .xh,.chart.on .xp{visibility:visible}
+.chart .xh{stroke:var(--sub);stroke-width:1;stroke-dasharray:3 3}
+.chart .xp{fill:var(--bg);stroke:var(--am);stroke-width:2}
+.chart .tip{position:absolute;top:0;width:150px;background:var(--ink);color:var(--bg);font-size:12px;line-height:1.5;padding:6px 8px;border-radius:8px;pointer-events:none}
