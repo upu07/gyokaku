@@ -783,7 +783,13 @@ buildSP(); render();
 // 相場の読み込み後は、入力中なら数値だけ更新して入力を消さない
 fetch('data/market.json', { cache: 'no-cache' }).then(r => r.json()).then(d => { MK = d; buildSP(); render(['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)); }).catch(() => toast('相場を読み込めませんでした'));
 Store.init().then(() => render());
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // 新しい版が入ったら一度だけ読み直して、すぐ最新の画面にする
+  const had = !!navigator.serviceWorker.controller; let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {}); });
+}
 // iPhoneでキーボードやダイアログを閉じたあと、下のタブが浮いたままになるのを戻す
 const fixVP = () => setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
 document.addEventListener('focusout', fixVP); dlg.addEventListener('close', fixVP);
