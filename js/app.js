@@ -367,7 +367,7 @@ ${editing ? `<div class="box" style="margin:0 0 14px;display:flex;gap:10px;align
 <h2>いつ・どこで</h2>
 <div class="cond">
  <div><label class="c" for="d-date">日付</label><input id="d-date" type="date" value="${esc(d.date)}" data-d="date"></div>
- <div><label class="c" for="d-time">漁に入った時刻</label><input id="d-time" type="time" value="${esc(d.time)}" data-d="time"></div>
+ <div><label class="c" for="d-time">時刻</label><input id="d-time" type="time" value="${esc(d.time)}" data-d="time"></div>
 </div>
 <div class="placeRow" style="margin-top:12px">
  <div><label class="c" for="d-place">場所の名前</label><input id="d-place" list="placeList" placeholder="例: 大度海岸の沖" value="${esc(d.place.name)}" data-d="place" autocomplete="off"></div>
