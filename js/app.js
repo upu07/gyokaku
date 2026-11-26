@@ -49,15 +49,18 @@ const KEY = 'gyokaku-local-v1';
 const mk = (sp, n, per) => ({ sp, n, per, kg: +(n * per).toFixed(1), price: '' });
 const newDraft = (keep = {}) => ({ id: null, date: keep.date || today(), time: nowHM(), place: { name: '', lat: null, lng: null }, entries: [], tfOn: true, memo: '', photos: [] });
 const DEF = {
-  mode: 'kg', view: 'calc', fee: 0, tf: 0, per: {},
+  mode: 'kg', view: 'home', fee: 0, tf: 0, per: {},
   sim: { days: 4, m: 1, tfn: 1, cost: 0,
     am: [mk('クルバニ', 1, 1.5), mk('ハヤー', 3, 0.8), mk('ビタロー', 3, 0.6), mk('ユダヤー', 1, 0.8), mk('オーバチャー', 2, 1.5), mk('長尾ミーバイ', 1, 1.0)],
     pm: [mk('オーバチャー', 4, 1.5), mk('ハヤー', 2, 0.8), mk('長尾ミーバイ', 1, 1.0), mk('アーガイ', 1, 1.0)] },
-  draft: newDraft(), hist: { sub: 'cal', month: today().slice(0, 7), day: today(), open: null, who: 'me', period: 'all' }
+  draft: newDraft(), hist: { sub: 'cal', month: today().slice(0, 7), day: today(), open: null, who: 'me', period: 'all' },
+  fr: { sub: 'cal', month: today().slice(0, 7), day: today(), open: null, who: '', period: 'all', rank: 'kg' },
+  home: { rank: 'kg', fperiod: 'month' }
 };
 let L; try { L = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!L || !L.sim || !L.draft) L = clone(DEF);
-L.hist = Object.assign(clone(DEF.hist), L.hist || {});
+L.hist = Object.assign(clone(DEF.hist), L.hist || {}, { who: 'me' });
+L.fr = Object.assign(clone(DEF.fr), L.fr || {}); L.home = Object.assign(clone(DEF.home), L.home || {});
 let saveT; const saveL = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(L)); } catch (e) {} }, 250); };
 
 /* ───────── 記録の保存先 ───────── */
@@ -102,7 +105,6 @@ const FB = {
   async onUser(u) {
     this.unsub.forEach(f => f()); this.unsub = [];
     Store.user = u || null; Store.profile = null; Store.trips = u ? [] : Store.readLocal(); Store.friendsTrips = {}; Store.sharers = [];
-    if (L.hist.who !== 'me') L.hist.who = 'me';
     Store.ready = true; render();
     if (!u) return;
     const { doc, getDoc, setDoc, collection, onSnapshot, query, where } = this.f;
@@ -117,6 +119,8 @@ const FB = {
     // 自分をフレンドに追加してくれている人 = 記録を見られる相手
     this.unsub.push(onSnapshot(query(collection(this.db, 'users'), where('friends', 'array-contains', u.uid)), s => {
       Store.sharers = s.docs.map(d => ({ uid: d.id, ...d.data() })); render(true);
+      // ホームのランキングとフレンドタブのために、見られる人の記録をまとめて読む
+      Promise.all(Store.sharers.map(x => this.loadFriendTrips(x.uid).catch(() => {}))).then(() => render(true));
     }, e => console.warn(e)));
   },
   async login(id, pw) { await this.a.signInWithEmailAndPassword(this.auth, `${id.trim().toLowerCase()}@${window.ACCOUNT_DOMAIN}`, pw); },
@@ -302,7 +306,7 @@ const saveTrip = async () => {
     before.filter(x => !t.photos.includes(x)).forEach(x => Photos.del(x));
     await Store.save(t);
     toast(d.id ? '変更を保存しました' : '記録しました。「過去の漁獲高」で見られます');
-    L.draft = newDraft({ date: t.date }); L.hist.month = t.date.slice(0, 7); L.hist.day = t.date; L.hist.open = t.id; L.hist.who = 'me';
+    L.draft = newDraft({ date: t.date }); L.hist.month = t.date.slice(0, 7); L.hist.day = t.date; L.hist.open = t.id;
     saveL(); render();
   } catch (e) { console.error(e); toast('保存できませんでした: ' + (e.message || e)); b.disabled = false; }
 };
@@ -356,13 +360,13 @@ const calcSim = () => {
 
 /* ───────── ③ 過去の漁獲高 ───────── */
 let hmap = null;
-const H = () => L.hist;
+const H = () => L.view === 'friend' ? L.fr : L.hist;
 const whoName = w => w === 'me' ? '自分' : (Store.sharers.find(s => s.uid === w)?.name || 'フレンド');
 const curTrips = () => Store.tripsOf(H().who).slice().sort((a, b) => (a.date + a.time) < (b.date + b.time) ? -1 : 1);
 const whoSel = () => !Store.user ? '' : `<div class="who"><label class="c" for="who">誰の記録を見るか</label><select id="who">${[['me', '自分']].concat(Store.sharers.map(s => [s.uid, s.name || s.id])).map(([v, n]) => `<option value="${esc(v)}"${H().who === v ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>${Store.sharers.length ? '' : '<p class="note" style="margin:4px 0 0">フレンドがあなたを追加すると、その人の記録をここで選べます。</p>'}</div>`;
 const renderHist = () => {
   const h = H();
-  $('main').innerHTML = `<section class="band"><div class="wrap">${whoSel()}
+  $('main').innerHTML = `<section class="band"><div class="wrap">
 <div class="seg" role="group" aria-label="表示方法"><button data-sub="cal" aria-pressed="${h.sub === 'cal'}">カレンダー</button><button data-sub="map" aria-pressed="${h.sub === 'map'}">地図</button></div>
 <div id="hbody"></div></div></section>`;
   h.sub === 'map' ? renderMap() : renderCal();
@@ -420,6 +424,64 @@ const renderMap = () => {
   if (h.focus) { const t = pts.find(x => x.id === h.focus); if (t) { hmap.setView([t.place.lat, t.place.lng], 14); ms[pts.indexOf(t)].openPopup(); } h.focus = null; }
 };
 
+/* ───────── ホーム ───────── */
+const RANK = { kg: '重さ', n: '匹数', yen: '金額' };
+const rankSpecies = (trips, by) => {
+  const m = {};
+  trips.forEach(t => t.entries.forEach(r => {
+    const x = m[r.sp] = m[r.sp] || { kg: 0, n: 0, yen: 0 }, k = kgOf(r, t.mode);
+    x.kg += k; x.n += num(r.n); x.yen += k * priceOf(r, true);
+  }));
+  return Object.entries(m).filter(([, v]) => v[by] > 0).sort((a, b) => b[1][by] - a[1][by]).slice(0, 10);
+};
+const fmtRank = (v, by) => by === 'kg' ? v.toFixed(1) + ' kg' : by === 'n' ? yen(v) + ' 匹' : yen(v) + '円';
+const rankBars = (list, by, color = 'var(--am)') => {
+  if (!list.length) return `<p class="empty">${by === 'n' ? '匹数を入れた記録がまだありません。' : 'まだ記録がありません。'}</p>`;
+  const mx = list[0][1][by] || 1;
+  return `<ol class="rank">${list.map(([k, v], i) => `<li><span class="no">${i + 1}</span><span class="nm2">${esc(k)}${byN[k]?.j ? ` <small>${esc(byN[k].j)}</small>` : ''}</span><span class="n">${fmtRank(v[by], by)}</span><div class="t"><i style="width:${v[by] / mx * 100}%;background:${color}"></i></div></li>`).join('')}</ol>`;
+};
+const segBtns = (attr, opts, cur, label) => `<div class="seg sm" role="group" aria-label="${label}">${Object.entries(opts).map(([k, v]) => `<button data-${attr}="${k}" aria-pressed="${cur === k}">${v}</button>`).join('')}</div>`;
+const sumOf = trips => ({ g: trips.reduce((s, t) => s + tripGross(t), 0), net: trips.reduce((s, t) => s + tripNet(t), 0), kg: trips.reduce((s, t) => s + tripKg(t), 0), n: trips.length });
+const renderHome = () => {
+  const me = Store.trips, all = sumOf(me), mon = today().slice(0, 7), yr = today().slice(0, 4), hm = L.home;
+  const tm = sumOf(me.filter(t => t.date.startsWith(mon)));
+  head('ホーム', '累計の手取り（手数料・振込手数料を引いた額）', yen(all.net) + '<small>円</small>', `累計売上（手数料前） ${yen(all.g)}円`);
+  kv([[yen(tm.net) + '円', `${+mon.slice(5)}月の手取り`], [tm.n + ' 回', `${+mon.slice(5)}月の漁の回数`], [all.kg.toFixed(1) + ' kg', '累計の総重量'], [all.n + ' 回', '累計の漁の回数']]);
+  // フレンドランキング
+  const pre = hm.fperiod === 'month' ? mon : yr;
+  const people = Store.user ? [{ uid: 'me', name: (Store.profile?.name || FB.idOf(Store.user)), trips: me }].concat(Store.sharers.map(x => ({ uid: x.uid, name: x.name || x.id, trips: Store.friendsTrips[x.uid] || [] }))) : [];
+  const fr = people.map(p => ({ ...p, ...sumOf(p.trips.filter(t => t.date.startsWith(pre))) })).sort((a, b) => b.net - a.net);
+  const fmx = fr.length ? fr[0].net || 1 : 1;
+  const recent = me.slice().sort((a, b) => (b.date + b.time) < (a.date + a.time) ? -1 : 1).slice(0, 3);
+  $('main').innerHTML = `<section class="band"><div class="wrap home">
+<div class="card"><div class="ch"><h2>今までとった魚種ランキング</h2>${segBtns('hrank', RANK, hm.rank, '並べ方')}</div>${rankBars(rankSpecies(me, hm.rank), hm.rank)}</div>
+<div class="card"><div class="ch"><h2>フレンドランキング</h2>${segBtns('fperiod', { month: '月間', year: '年間' }, hm.fperiod, '期間')}</div>
+${!Store.user ? `<p class="empty">${Store.mode === 'cloud' ? 'ログインすると、フレンドとの手取りランキングが出ます。' : 'ログイン機能の設定後に使えます。'}</p>` :
+ `<p class="note" style="margin-top:0">${hm.fperiod === 'month' ? `${+mon.slice(5)}月` : `${yr}年`}の手取り。あなたをフレンドに追加している人が並びます。</p><ol class="rank">${fr.map((p, i) => `<li class="${p.uid === 'me' ? 'me' : ''}"><span class="no">${i + 1}</span><span class="nm2">${esc(p.name)}${p.uid === 'me' ? ' <small>あなた</small>' : ''}</span><span class="n">${yen(p.net)}円</span><div class="t"><i style="width:${Math.max(0, p.net) / fmx * 100}%;background:${p.uid === 'me' ? 'var(--am)' : 'var(--pm)'}"></i></div><small class="sub2">${p.n}回・${p.kg.toFixed(1)}kg</small></li>`).join('')}</ol>${Store.sharers.length ? '' : '<p class="note">右上のアカウントからフレンドを追加し、相手にもあなたを追加してもらうと並びます。</p>'}`}</div>
+<div class="card"><h2>最近の漁</h2>${recent.length ? `<div class="trips" style="margin-top:0">${recent.map(t => `<button class="recent" data-goto-own="${esc(t.id)}"><span class="tm">${md(t.date)} ${esc(t.time)}</span><span class="pl">${esc(t.place?.name || '')}</span><span class="tt">${yen(tripNet(t))}円</span></button>`).join('')}</div>` : '<p class="empty">「漁獲高計算」から最初の漁を記録しましょう。</p>'}</div>
+</div></section>`;
+};
+
+/* ───────── フレンド ───────── */
+const renderFriend = () => {
+  const f = L.fr;
+  if (!Store.user || !Store.sharers.length) {
+    head('フレンドの漁獲高', '', '—', '');
+    kv([['—', 'フレンド'], ['—', '漁の回数'], ['—', '総重量'], ['—', '手取り']]);
+    $('main').innerHTML = `<section class="band"><div class="wrap"><p class="empty">${!Store.user ? (Store.mode === 'cloud' ? 'ログインすると、フレンドの漁獲高を見られます。' : 'ログイン機能の設定後に使えます。') : 'まだ見られるフレンドがいません。右上のアカウントからフレンドを追加し、相手にもあなたのIDを追加してもらってください。'}</p></div></section>`;
+    return;
+  }
+  if (!Store.sharers.some(x => x.uid === f.who)) f.who = Store.sharers[0].uid;
+  const trips = Store.friendsTrips[f.who] || [], s = sumOf(trips);
+  $('main').innerHTML = `<section class="band"><div class="wrap">
+<div class="who"><label class="c" for="who">フレンド</label><select id="who">${Store.sharers.map(x => `<option value="${esc(x.uid)}"${f.who === x.uid ? ' selected' : ''}>${esc(x.name || x.id)}</option>`).join('')}</select></div>
+<div class="card"><div class="ch"><h2>今までとった魚種ランキング</h2>${segBtns('frank', RANK, f.rank, '並べ方')}</div>${rankBars(rankSpecies(trips, f.rank), f.rank, 'var(--pm)')}</div>
+<h2 style="margin-top:22px">過去の漁獲高</h2>
+<div class="seg" role="group" aria-label="表示方法"><button data-sub="cal" aria-pressed="${f.sub === 'cal'}">カレンダー</button><button data-sub="map" aria-pressed="${f.sub === 'map'}">地図</button></div>
+<div id="hbody"></div></div></section>`;
+  f.sub === 'map' ? renderMap() : renderCal();
+};
+
 /* ───────── アカウント ───────── */
 const dlg = $('dlg');
 const openAcct = (msg = '') => {
@@ -459,10 +521,10 @@ dlg.addEventListener('submit', async e => {
 });
 
 /* ───────── 描画 ───────── */
-const VIEWS = { calc: [renderCalc, calcCalc], sim: [renderSim, calcSim], hist: [renderHist, () => {}] };
+const VIEWS = { calc: [renderCalc, calcCalc], sim: [renderSim, calcSim], home: [renderHome, () => {}], hist: [renderHist, () => {}], friend: [renderFriend, () => {}] };
 const calc = () => { VIEWS[L.view][1](); saveL(); };
 const render = (soft) => {
-  if (soft && L.view === 'calc') { calcCalc(); updAcct(); return; } // 入力中の再描画を避ける
+  if (soft && (L.view === 'calc' || L.view === 'sim')) { VIEWS[L.view][1](); updAcct(); return; } // 入力中の再描画を避ける
   if (!VIEWS[L.view]) L.view = 'calc';
   if (L.view !== 'calc' && pmap) { pmap.remove(); pmap = null; pmark = null; }
   if (L.view !== 'hist' && hmap) { hmap.remove(); hmap = null; }
@@ -499,7 +561,7 @@ document.addEventListener('change', async e => {
   }
   else if (t.id === 'd-time') render();
   else if (t.id === 'who') {
-    H().who = t.value; H().open = null; saveL();
+    L.fr.who = t.value; L.fr.open = null; saveL();
     if (t.value !== 'me' && !Store.friendsTrips[t.value]) { try { await FB.loadFriendTrips(t.value); } catch (err) { toast('記録を読み込めませんでした'); } }
     render();
   }
@@ -542,6 +604,10 @@ document.addEventListener('click', async e => {
     const id = ds.delPhoto, saved = Store.trips.some(x => (x.photos || []).includes(id));
     L.draft.photos = (L.draft.photos || []).filter(x => x !== id); if (!saved) Photos.del(id); saveL(); render();
   }
+  else if (ds.hrank) { L.home.rank = ds.hrank; render(); }
+  else if (ds.fperiod) { L.home.fperiod = ds.fperiod; render(); }
+  else if (ds.frank) { L.fr.rank = ds.frank; render(); }
+  else if (ds.gotoOwn) { const tr = Store.trips.find(x => x.id === ds.gotoOwn); if (tr) { L.view = 'hist'; L.hist.sub = 'cal'; L.hist.month = tr.date.slice(0, 7); L.hist.day = tr.date; L.hist.open = tr.id; render(); window.scrollTo(0, 0); } }
   else if (t.id === 'acctBtn') openAcct();
   else if (ds.close != null) dlg.close();
   else if (t.id === 'logout') { await FB.logout(); dlg.close(); toast('ログアウトしました'); }
