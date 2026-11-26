@@ -94,7 +94,7 @@ const FB = {
   async init(cfg) {
     const base = `https://www.gstatic.com/firebasejs/${this.v}/`;
     const [app, a, f] = await Promise.all([import(base + 'firebase-app.js'), import(base + 'firebase-auth.js'), import(base + 'firebase-firestore.js')]);
-    this.a = a; this.f = f;
+    this.a = a; this.f = f; this.app = app; this.cfg = cfg;
     const fa = app.initializeApp(cfg);
     this.auth = a.getAuth(fa);
     try { this.db = f.initializeFirestore(fa, { localCache: f.persistentLocalCache({ tabManager: f.persistentMultipleTabManager() }) }); }
@@ -124,6 +124,31 @@ const FB = {
     }, e => console.warn(e)));
   },
   async login(id, pw) { await this.a.signInWithEmailAndPassword(this.auth, `${id.trim().toLowerCase()}@${window.ACCOUNT_DOMAIN}`, pw); },
+  isAdmin() { return !!Store.user && (window.ADMIN_IDS || ['austin']).includes(this.idOf(Store.user)); },
+  // 管理者用: 友人のアカウントを発行する。自分のログインを保ったまま、別のアプリ枠で新しいユーザーを作る
+  async createAccount(id, pw, name, mutual) {
+    const { doc, getDoc, setDoc, updateDoc, arrayUnion } = this.f;
+    if (!/^[a-z0-9][a-z0-9._-]{1,29}$/.test(id)) throw new Error('IDは半角の英小文字・数字（2〜30文字、. _ - も可）にしてください');
+    if (pw.length < 6) throw new Error('パスワードは6文字以上にしてください');
+    if ((await getDoc(doc(this.db, 'ids', id))).exists()) throw new Error('そのIDはもう使われています');
+    if (!this.app2) this.app2 = this.app.initializeApp(this.cfg, 'issuer');
+    const auth2 = this.a.getAuth(this.app2), db2 = this.f.getFirestore(this.app2);
+    let cred;
+    try { cred = await this.a.createUserWithEmailAndPassword(auth2, `${id}@${window.ACCOUNT_DOMAIN}`, pw); }
+    catch (e) {
+      const c = e.code || '';
+      throw new Error(c === 'auth/email-already-in-use' ? 'そのIDはもう使われています'
+        : /admin-restricted|operation-not-allowed/.test(c) ? 'Firebaseの設定で新規作成が止められています（Authentication → 設定 → ユーザーアクション）'
+        : c === 'auth/weak-password' ? 'パスワードが弱すぎます（6文字以上）' : '発行できませんでした（' + (c || e.message) + '）');
+    }
+    const uid = cred.user.uid;
+    try {
+      await setDoc(doc(db2, 'users', uid), { id, name: name || id, friends: mutual ? [Store.user.uid] : [] });
+      await setDoc(doc(db2, 'ids', id), { uid });
+    } finally { await this.a.signOut(auth2).catch(() => {}); }
+    if (mutual) await updateDoc(doc(this.db, 'users', Store.user.uid), { friends: arrayUnion(uid) });
+    return uid;
+  },
   async logout() { await this.a.signOut(this.auth); },
   async changePassword(pw) { await this.a.updatePassword(this.auth.currentUser, pw); },
   async saveTrip(t) { const { doc, setDoc } = this.f; await setDoc(doc(this.db, 'users', Store.user.uid, 'trips', t.id), t); },
@@ -594,6 +619,13 @@ const openAcct = (msg = '') => {
 <p class="err" id="ferr">${esc(msg)}</p>
 ${local ? `<div class="box"><p style="margin:0 0 8px">この端末にログイン前の記録が ${local}件 あります。</p><button id="migrate">アカウントに移す</button></div>` : ''}
 <details style="margin-top:12px"><summary>パスワードを変える</summary><div class="placeRow"><input id="npw" type="password" autocomplete="new-password" placeholder="新しいパスワード（6文字以上）" aria-label="新しいパスワード"><button id="setPw">変更</button></div></details>
+${FB.isAdmin() ? `<details class="box" id="issue" style="margin-top:12px"${msg === '__issue' ? ' open' : ''}><summary><b>アカウントを発行する（管理者）</b></summary>
+<p class="note">友人に渡すIDとパスワードを決めて発行します。メールアドレスは使いません。</p>
+<label class="c" for="nid">ID（半角英小文字・数字）</label><input id="nid" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="例: tanaka" maxlength="30">
+<label class="c" for="nname" style="margin-top:8px">表示名（あとで本人が変えられます）</label><input id="nname" maxlength="20" placeholder="例: 田中">
+<label class="c" for="npw2" style="margin-top:8px">初期パスワード（6文字以上）</label><div class="placeRow"><input id="npw2" autocomplete="off" autocapitalize="none" spellcheck="false"><button type="button" id="genPw">自動で作る</button></div>
+<label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="nmutual" checked style="width:auto">お互いにフレンドにする</label>
+<p class="err" id="ierr"></p><button class="pri" id="issueBtn" style="width:100%">発行する</button><div id="issued"></div></details>` : ''}
 <div class="acts"><button id="logout">ログアウト</button><button class="pri" data-close>閉じる</button></div></div>`;
     fillFriends();
   }
@@ -711,6 +743,20 @@ document.addEventListener('click', async e => {
   else if (t.id === 'saveName') { try { await FB.setName($('pname').value.trim() || FB.idOf(Store.user)); toast('表示名を変えました'); } catch (err) { $('ferr').textContent = '変更できませんでした'; } }
   else if (t.id === 'addFriend') { try { await FB.addFriend($('fid').value); toast('フレンドに追加しました'); openAcct(); } catch (err) { $('ferr').textContent = err.message; } }
   else if (ds.unfriend) { try { await FB.removeFriend(ds.unfriend); openAcct(); } catch (err) { $('ferr').textContent = '外せませんでした'; } }
+  else if (t.id === 'genPw') { const c = 'abcdefghjkmnpqrstuvwxyz23456789'; $('npw2').value = Array.from(crypto.getRandomValues(new Uint32Array(8)), v => c[v % c.length]).join(''); }
+  else if (t.id === 'issueBtn') {
+    const id = $('nid').value.trim().toLowerCase(), pw = $('npw2').value, nm = $('nname').value.trim();
+    t.disabled = true; $('ierr').textContent = '';
+    try {
+      await FB.createAccount(id, pw, nm, $('nmutual').checked);
+      const text = `大野水産 漁獲帳\nhttps://upu07.github.io/gyokaku/\nID: ${id}\nパスワード: ${pw}`;
+      $('issued').innerHTML = `<div class="box" style="margin-top:10px"><p style="margin:0 0 6px"><b>発行しました。</b>この内容を本人に伝えてください。</p><pre style="white-space:pre-wrap;margin:0 0 8px">${esc(text)}</pre><button type="button" id="copyIssued">コピー</button></div>`;
+      $('copyIssued').onclick = () => navigator.clipboard?.writeText(text).then(() => toast('コピーしました'), () => {});
+      $('nid').value = $('nname').value = $('npw2').value = ''; toast('アカウントを発行しました');
+      if ($('nmutual').checked) fillFriends();
+    } catch (err) { $('ierr').textContent = err.message; }
+    t.disabled = false;
+  }
   else if (t.id === 'setPw') { try { await FB.changePassword($('npw').value); toast('パスワードを変えました'); openAcct(); } catch (err) { $('ferr').textContent = err.code === 'auth/requires-recent-login' ? '一度ログアウトしてログインし直してから変えてください' : '変えられませんでした（6文字以上にしてください）'; } }
   else if (t.id === 'migrate') {
     t.disabled = true; const a = Store.readLocal();
